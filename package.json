@@ -1,0 +1,9 @@
+{
+  "name": "sg-transit",
+  "version": "1.0.0",
+  "description": "Singapore bus and MRT planner: choose where to board and alight, with live LTA bus arrivals",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=24" },
+  "dependencies": { "express": "^4.19.2" }
+}

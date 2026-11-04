@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#059669">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="SG Bus & MRT">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>SG Bus &amp; MRT</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root { --bg:#fff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb; --card:#f9fafb; --accent:#059669; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111827; --fg:#f3f4f6; --muted:#9ca3af; --line:#374151; --card:#1f2937; --accent:#34d399; } }
+  * { box-sizing:border-box; }
+  body { margin:0 auto; font-family:system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--fg); padding:16px; padding-top:calc(16px + env(safe-area-inset-top)); padding-bottom:calc(16px + env(safe-area-inset-bottom)); max-width:640px; }
+  h1 { font-size:18px; margin:0 0 4px; } h2 { font-size:15px; margin:18px 0 6px; }
+  p.hint { color:var(--muted); font-size:13px; margin:4px 0 10px; }
+  #map { height:38vh; min-height:240px; border-radius:12px; border:1px solid var(--line); margin:8px 0; }
+  #trip { position:sticky; top:calc(4px + env(safe-area-inset-top)); z-index:1000; background:var(--accent); color:#fff; border-radius:12px; padding:10px 14px; margin:8px 0; font-size:14px; box-shadow:0 4px 14px rgba(0,0,0,.25); }
+  #trip small { opacity:.9; }
+  .leg { border:1px solid var(--line); background:var(--card); border-radius:12px; padding:12px; margin-bottom:12px; }
+  .head { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; font-weight:600; }
+  .field { position:relative; margin-bottom:8px; }
+  input[type=text], select { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:14px; background:var(--bg); color:var(--fg); }
+  label.t { font-size:12px; color:var(--muted); display:block; margin-bottom:3px; }
+  .sugg { position:absolute; top:100%; left:0; right:0; z-index:900; background:var(--bg); border:1px solid var(--line); border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,.15); max-height:220px; overflow:auto; }
+  .sugg div { padding:8px 12px; font-size:13px; cursor:pointer; } .sugg div:hover { background:var(--card); } small { color:var(--muted); }
+  button { cursor:pointer; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:8px; padding:8px 12px; font-size:13px; }
+  button.add { width:100%; border-style:dashed; padding:12px; }
+  .row { display:flex; gap:8px; margin:10px 0; } .row button { flex:1; padding:13px; font-weight:600; font-size:15px; }
+  button.go { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .svc { display:flex; gap:8px; align-items:flex-start; padding:8px; border:1px solid var(--line); border-radius:8px; margin-top:6px; cursor:pointer; background:var(--bg); font-size:13px; }
+  .svc b { font-size:16px; min-width:44px; } .svc.on { border-color:var(--accent); }
+  .warn { background:#fef3c7; color:#78350f; border:1px solid #f59e0b; border-radius:8px; padding:8px 10px; font-size:12px; margin-top:8px; }
+  .step { font-size:13px; padding:6px 0; border-bottom:1px dashed var(--line); } .err { color:#dc2626; font-size:13px; margin-top:6px; }
+  #total { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 16px; font-size:14px; } #total b { font-size:20px; }
+  .saved { display:flex; justify-content:space-between; gap:8px; align-items:center; border:1px solid var(--line); background:var(--card); border-radius:10px; padding:10px; margin-bottom:8px; font-size:14px; }
+</style>
+</head>
+<body>
+<h1>🚌🚆 SG Bus &amp; MRT</h1>
+<p class="hint">Pick where you board and get off for each leg. Add a leg to transfer.</p>
+<div id="map"></div>
+<div id="trip" hidden></div>
+<div id="legs"></div>
+<button class="add" id="add">+ Add leg</button>
+<div class="row"><button class="go" id="startBtn">▶ Start trip</button><button id="saveBtn">💾 Save route</button></div>
+<div id="total" hidden></div>
+<div id="saved"></div>
+<p class="hint">Ride times are estimates (bus ≈ 18 km/h, MRT ≈ 2.5 min per station, 5 min per interchange). Bus arrivals are live from LTA. LRT is not included. Map: © OpenStreetMap contributors.</p>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+const api = u => fetch(u).then(r => r.json());
+const LOAD = { SEA: '🟢', SDA: '🟡', LSD: '🔴' }, COLORS = ['#059669', '#2563eb', '#d97706', '#7c3aed', '#db2777'];
+const legs = []; let trip = null, me = null, wake = null;
+
+/* ---------- map ---------- */
+const map = L.map('map').setView([1.3521, 103.8198], 11);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+const layer = L.layerGroup().addTo(map);
+
+function geo(l) {            // coordinates + labels for one leg, or null if not ready
+  if (!l.data) return null;
+  if (l.type === 'bus') {
+    const s = l.data.services[l.sel]; if (!s) return null;
+    const b = [+l.data.from.lat, +l.data.from.lon], a = [+l.data.to.lat, +l.data.to.lon];
+    return { path: s.path?.length > 1 ? s.path : [b, a], board: b, alight: a, bn: l.data.from.name, an: l.data.to.name, label: 'Bus ' + s.service };
+  }
+  const p = l.data.points || []; if (p.length < 2) return null;
+  return { path: p.map(x => [x.lat, x.lon]), board: [p[0].lat, p[0].lon], alight: [p[p.length - 1].lat, p[p.length - 1].lon], bn: p[0].name, an: p[p.length - 1].name, label: 'MRT' };
+}
+function drawMap() {
+  layer.clearLayers(); const all = [];
+  legs.forEach((l, i) => {
+    const g = geo(l); if (!g) return; const c = COLORS[i % 5];
+    L.polyline(g.path, { color: c, weight: 5, dashArray: l.type === 'mrt' ? '8 6' : null }).addTo(layer);
+    L.circleMarker(g.board, { radius: 8, color: '#fff', weight: 2, fillColor: '#16a34a', fillOpacity: 1 }).bindTooltip('Board: ' + g.bn).addTo(layer);
+    L.circleMarker(g.alight, { radius: 8, color: '#fff', weight: 2, fillColor: '#dc2626', fillOpacity: 1 }).bindTooltip('Get off: ' + g.an).addTo(layer);
+    all.push(...g.path);
+  });
+  if (all.length && !trip) map.fitBounds(L.latLngBounds(all), { padding: [30, 30] });
+}
+
+/* ---------- legs ---------- */
+function addLeg(pre = {}) {
+  const leg = { type: pre.type || 'bus', from: pre.from || null, to: pre.to || null, data: null, sel: 0 };
+  legs.push(leg);
+  const el = document.createElement('div'); el.className = 'leg';
+  el.innerHTML = `<div class="head"><span>Leg ${legs.length}</span><span><select class="type" style="width:auto"><option value="bus">🚌 Bus</option><option value="mrt">🚆 MRT</option></select>
+    ${legs.length > 1 ? ' <button class="rm">✕</button>' : ''}</span></div>
+    <div class="field"><label class="t">Board at</label><input type="text" class="from" autocomplete="off"></div>
+    <div class="field"><label class="t">Get off at</label><input type="text" class="to" autocomplete="off"></div><div class="out"></div>`;
+  leg.el = el; $('legs').appendChild(el);
+  const ins = el.querySelectorAll('input'), ph = () => ins.forEach(i => i.placeholder = leg.type === 'bus' ? 'Search stop name, road or code' : 'Search MRT station');
+  el.querySelector('.type').value = leg.type; ph();
+  if (leg.from) ins[0].value = leg.from.name; if (leg.to) ins[1].value = leg.to.name;
+  attach(ins[0], leg, 'from'); attach(ins[1], leg, 'to');
+  el.querySelector('.type').onchange = e => { leg.type = e.target.value; leg.from = leg.to = leg.data = null; ins.forEach(i => i.value = ''); el.querySelector('.out').innerHTML = ''; ph(); summary(); };
+  const rm = el.querySelector('.rm'); if (rm) rm.onclick = () => { legs.splice(legs.indexOf(leg), 1); el.remove(); summary(); };
+  return leg;
+}
+function attach(input, leg, key) {
+  const box = document.createElement('div'); box.className = 'sugg'; box.hidden = true; input.parentNode.appendChild(box);
+  let t; input.addEventListener('input', () => { leg[key] = null; clearTimeout(t); t = setTimeout(async () => {
+    const q = input.value.trim(); if (q.length < 2) { box.hidden = true; return; }
+    const r = await api((leg.type === 'bus' ? '/api/transit/busstops?q=' : '/api/transit/stations?q=') + encodeURIComponent(q));
+    box.innerHTML = '';
+    (Array.isArray(r) ? r : []).forEach(x => {
+      const d = document.createElement('div');
+      d.innerHTML = leg.type === 'bus' ? `${esc(x.name)} <small>${esc(x.code)} · ${esc(x.road)}</small>` : `${esc(x.name)} <small>${esc(x.codes.join(' / '))}</small>`;
+      d.onclick = () => { leg[key] = x; input.value = x.name; box.hidden = true; load(leg); };
+      box.appendChild(d);
+    });
+    box.hidden = !box.children.length;
+  }, 300); });
+  input.addEventListener('blur', () => setTimeout(() => box.hidden = true, 200));
+}
+async function load(leg) {
+  const out = leg.el.querySelector('.out'); if (!leg.from || !leg.to) return;
+  out.innerHTML = '<small>Loading… (first bus lookup can take ~20s)</small>';
+  const url = leg.type === 'bus' ? `/api/transit/bus?from=${leg.from.code}&to=${leg.to.code}`
+    : `/api/transit/train?from=${encodeURIComponent(leg.from.name)}&to=${encodeURIComponent(leg.to.name)}`;
+  const d = await api(url).catch(e => ({ error: e.message }));
+  leg.data = d.error ? null : d; leg.sel = 0;
+  if (d.error) out.innerHTML = `<div class="err">${esc(d.error)}</div>`; else show(leg);
+  summary();
+}
+function show(leg) {
+  const out = leg.el.querySelector('.out'), d = leg.data;
+  if (leg.type === 'bus') {
+    if (!d.services.length) { out.innerHTML = '<div class="warn">No direct bus goes from this stop to that one in this direction. Add a leg to transfer, or pick different stops.</div>'; return; }
+    out.innerHTML = d.services.map((s, i) => {
+      const arr = s.arrivals.length ? s.arrivals.map(a => `${a.min < 1 ? 'Arr' : a.min + ' min'} ${LOAD[a.load] || ''}`).join(' · ') : 'no live timing';
+      return `<div class="svc ${i === leg.sel ? 'on' : ''}" data-i="${i}"><b>${esc(s.service)}</b><div>Next: ${arr}<br><small>${s.stops} stops · ${s.distKm} km · ~${s.rideMin} min ride</small></div></div>`;
+    }).join('');
+    out.querySelectorAll('.svc').forEach(n => n.onclick = () => { leg.sel = +n.dataset.i; show(leg); summary(); });
+  } else {
+    out.innerHTML = d.legs.map(l => `<div class="step">🚆 <b>${esc(l.line)} line</b>: ${esc(l.from)} → ${esc(l.to)}<br><small>${l.stops} stop${l.stops > 1 ? 's' : ''} · ~${Math.round(l.minutes)} min</small></div>`).join('')
+      + `<div class="step"><b>~${d.minutes} min</b> · ${d.transfers} interchange${d.transfers === 1 ? '' : 's'}</div>`
+      + (d.alerts.affected ? `<div class="warn">⚠ Service disruption on a line in this trip: ${esc(d.alerts.messages.join(' '))}</div>`
+         : d.alerts.status === 2 ? `<div class="warn">Disruption elsewhere on the network: ${esc(d.alerts.messages.join(' '))}</div>` : '')
+      + ((d.points || []).length < 2 ? '<div class="warn">Station locations could not be loaded, so this leg is not drawn on the map or tracked by Start trip.</div>' : '');
+  }
+}
+function summary() {
+  let total = 0, n = 0;
+  legs.forEach(l => { if (!l.data) return; n++;
+    if (l.type === 'bus') { const s = l.data.services[l.sel]; if (s) total += s.rideMin + (s.arrivals[0]?.min ?? 5); } else total += l.data.minutes; });
+  if (n > 1) total += (n - 1) * 5;
+  $('total').hidden = !n; $('total').innerHTML = `Estimated total <b>~${Math.round(total)} min</b> <small>(includes wait for first bus and 5 min between legs; excludes walking to the first stop)</small>`;
+  drawMap();
+}
+
+/* ---------- start trip (GPS guidance) ---------- */
+const dm = (a, b) => { const R = 6371000, r = Math.PI / 180, dl = (b[0] - a[0]) * r, dn = (b[1] - a[1]) * r;
+  const h = Math.sin(dl / 2) ** 2 + Math.cos(a[0] * r) * Math.cos(b[0] * r) * Math.sin(dn / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); };
+const hold = async () => { try { wake = await navigator.wakeLock?.request('screen'); } catch {} };
+const say = (t, buzz) => { $('trip').hidden = false; $('trip').innerHTML = t; if (buzz) try { navigator.vibrate?.([300, 150, 300]); } catch {} };
+document.addEventListener('visibilitychange', () => { if (trip && document.visibilityState === 'visible') hold(); });
+
+function startTrip() {
+  const gs = legs.map(geo);
+  if (!legs.length || gs.some(g => !g)) return alert('Choose where to board and get off for every leg first (and a bus service).');
+  if (!navigator.geolocation) return alert('This device cannot provide GPS location.');
+  trip = { i: 0, phase: 'board', gs, first: true, hold: 0 };
+  $('startBtn').textContent = '■ Stop trip'; hold(); say('Finding your location… allow location access if asked.');
+  trip.watch = navigator.geolocation.watchPosition(onPos,
+    e => say(e.code === 1 ? 'Location is blocked. Allow location for this site in your phone settings, then try again.' : 'Waiting for GPS signal…'),
+    { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
+}
+function stopTrip(msg) {
+  if (trip?.watch != null) navigator.geolocation.clearWatch(trip.watch);
+  trip = null; $('startBtn').textContent = '▶ Start trip'; try { wake?.release(); } catch {} wake = null;
+  if (me) { map.removeLayer(me); me = null; }
+  if (msg) say(msg); else $('trip').hidden = true;
+}
+function onPos(pos) {
+  if (!trip) return; const p = [pos.coords.latitude, pos.coords.longitude];
+  if (!me) me = L.circleMarker(p, { radius: 9, color: '#fff', weight: 3, fillColor: '#2563eb', fillOpacity: 1 }).addTo(map); else me.setLatLng(p);
+  if (trip.first) { trip.first = false; map.setView(p, 16); } else map.panTo(p);
+  if (Date.now() < trip.hold) return;
+  const g = trip.gs[trip.i], l = legs[trip.i];
+  if (trip.phase === 'board') {
+    const d = dm(p, g.board);
+    if (d < 80) {
+      trip.phase = 'ride'; const w = l.type === 'bus' ? l.data.services[l.sel].arrivals[0] : null;
+      say(`🟢 You're at <b>${esc(g.bn)}</b>. Board <b>${esc(g.label)}</b>${w ? ` (next in ${w.min < 1 ? 'now' : w.min + ' min'})` : ''}.`, true); trip.hold = Date.now() + 6000;
+    } else say(`🚶 Walk to <b>${esc(g.bn)}</b> · ${Math.round(d)} m<br><small>Then ${esc(g.label)} → ${esc(g.an)}</small>`);
+  } else {
+    const d = dm(p, g.alight);
+    if (d < 150) {
+      say(`🔴 Get off now at <b>${esc(g.an)}</b>`, true); trip.hold = Date.now() + 8000; trip.i++; trip.phase = 'board';
+      if (trip.i >= legs.length) setTimeout(() => stopTrip('🏁 You have arrived.'), 8000);
+    } else {
+      let extra = ''; if (l.type === 'bus') { let bi = 0, bd = 1e9; g.path.forEach((q, k) => { const x = dm(p, q); if (x < bd) { bd = x; bi = k; } }); extra = ` · about ${Math.max(0, g.path.length - 1 - bi)} stops left`; }
+      say(`🚌 On <b>${esc(g.label)}</b> → get off at <b>${esc(g.an)}</b>${extra}<br><small>${Math.round(d)} m to go</small>`);
+    }
+  }
+}
+
+/* ---------- saved routes (stored on this device) ---------- */
+const SKEY = 'sgTransitSaved';
+const getSaved = () => { try { return JSON.parse(localStorage.getItem(SKEY)) || []; } catch { return []; } };
+function saveRoute() {
+  const ready = legs.filter(l => l.from && l.to);
+  if (!ready.length) return alert('Pick where to board and get off first.');
+  const name = prompt('Name this route (for example: Home to Work)'); if (!name) return;
+  const tl = ready.map(l => ({ type: l.type, from: l.from, to: l.to, service: l.type === 'bus' ? l.data?.services[l.sel]?.service : null }));
+  try { localStorage.setItem(SKEY, JSON.stringify([...getSaved(), { name, legs: tl }])); } catch { alert('This browser would not let me save.'); }
+  renderSaved();
+}
+function renderSaved() {
+  const a = getSaved();
+  $('saved').innerHTML = a.length ? '<h2>Saved routes</h2>' + a.map((r, i) => `<div class="saved"><span>${esc(r.name)}<br><small>${r.legs.map(l => esc(l.from.name) + ' → ' + esc(l.to.name)).join(' · ')}</small></span><span><button data-open="${i}">Open</button> <button data-del="${i}">✕</button></span></div>`).join('') : '';
+  $('saved').querySelectorAll('[data-open]').forEach(b => b.onclick = () => openRoute(+b.dataset.open));
+  $('saved').querySelectorAll('[data-del]').forEach(b => b.onclick = () => { const x = getSaved(); x.splice(+b.dataset.del, 1); localStorage.setItem(SKEY, JSON.stringify(x)); renderSaved(); });
+}
+async function openRoute(i) {
+  stopTrip(); const r = getSaved()[i]; if (!r) return;
+  legs.splice(0).forEach(l => l.el.remove());
+  for (const s of r.legs) {
+    const leg = addLeg(s); await load(leg);
+    if (s.service && leg.data) { const k = leg.data.services.findIndex(x => x.service === s.service); if (k >= 0) { leg.sel = k; show(leg); } }
+  }
+  summary(); window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+$('add').onclick = () => addLeg();
+$('startBtn').onclick = () => trip ? stopTrip() : startTrip();
+$('saveBtn').onclick = saveRoute;
+addLeg(); renderSaved();
+if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+</script>
+</body>
+</html>
